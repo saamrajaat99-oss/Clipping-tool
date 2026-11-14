@@ -1,0 +1,45 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "chrome",
+            "request": "launch",
+            "name": "Launch Chrome against AutoClip Studio",
+            "url": "http://localhost:8000",
+            "webRoot": "${workspaceFolder}/frontend",
+            "preLaunchTask": "Start Backend Server"
+        },
+        {
+            "type": "chrome",
+            "request": "launch",
+            "name": "Open Chrome (http://localhost:8000)",
+            "url": "http://localhost:8000",
+            "webRoot": "${workspaceFolder}/frontend"
+        },
+        {
+            "type": "debugpy",
+            "request": "launch",
+            "name": "Python: AutoClip FastAPI Backend",
+            "module": "uvicorn",
+            "args": [
+                "backend.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Full Stack Studio (Backend + Chrome)",
+            "configurations": [
+                "Python: AutoClip FastAPI Backend",
+                "Open Chrome (http://localhost:8000)"
+            ]
+        }
+    ]
+}
