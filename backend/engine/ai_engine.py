@@ -32,23 +32,26 @@ EDUCATIONAL_KEYWORDS = [
     "process", "guide", "tutorial", "explained", "principle"
 ]
 
-def extract_audio(video_path: str, output_wav_path: str) -> bool:
+def extract_audio(video_path: str, output_wav_path: str, max_duration: Optional[float] = None, start_time: float = 0.0) -> bool:
     """Extracts 16kHz mono audio from video file for speech analysis."""
     hw = get_hardware_info()
     ffmpeg_cmd = hw["ffmpeg_path"]
     
     try:
-        cmd = [
-            ffmpeg_cmd,
-            "-y",
-            "-i", video_path,
+        cmd = [ffmpeg_cmd, "-y"]
+        if start_time > 0:
+            cmd.extend(["-ss", str(start_time)])
+        cmd.extend(["-i", video_path])
+        if max_duration:
+            cmd.extend(["-t", str(max_duration)])
+        cmd.extend([
             "-vn",
             "-acodec", "pcm_s16le",
             "-ar", "16000",
             "-ac", "1",
             output_wav_path
-        ]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        ])
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
         return res.returncode == 0 and os.path.exists(output_wav_path)
     except Exception as e:
         logger.error(f"Audio extraction failed: {e}")
@@ -123,8 +126,8 @@ def transcribe_audio(wav_path: str, model_size: str = "base") -> List[Dict[str, 
         audio_np = load_wav_as_float32(wav_path)
         if audio_np is not None and len(audio_np) > 0:
             from faster_whisper import WhisperModel
-            # Load model on CPU with int8 quantization (super fast on i7-13650HX)
-            model = WhisperModel("tiny", device="cpu", compute_type="int8")
+            # Load model on CPU with int8 quantization utilizing 12 threads on Intel Core i7-13650HX
+            model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=12)
             whisper_segments, info = model.transcribe(audio_np, word_timestamps=True)
             
             for seg in whisper_segments:
@@ -271,19 +274,7 @@ def analyze_and_generate_clips(
     3. Finds top engaging moments aligned to sentence boundaries.
     4. Generates viral titles, social captions, and trending hashtags.
     """
-    wav_path = str(Path(video_path).with_suffix(".wav"))
-    has_audio = extract_audio(video_path, wav_path)
-    
-    segments = []
-    if has_audio and os.path.exists(wav_path):
-        segments = transcribe_audio(wav_path)
-        # Clean up temp wav
-        try:
-            os.remove(wav_path)
-        except Exception:
-            pass
-
-    # Get total video duration
+    # 1. First probe total video duration
     hw = get_hardware_info()
     ffprobe_cmd = hw["ffprobe_path"]
     total_duration = 180.0
@@ -299,6 +290,21 @@ def analyze_and_generate_clips(
             total_duration = float(res.stdout.strip())
     except Exception:
         pass
+
+    # For long videos (over 10 mins), sample up to 10 mins of speech to prevent multi-hour transcription delays
+    audio_sample_limit = 600.0 if total_duration > 600.0 else None
+
+    wav_path = str(Path(video_path).with_suffix(".wav"))
+    has_audio = extract_audio(video_path, wav_path, max_duration=audio_sample_limit)
+    
+    segments = []
+    if has_audio and os.path.exists(wav_path):
+        segments = transcribe_audio(wav_path)
+        # Clean up temp wav
+        try:
+            os.remove(wav_path)
+        except Exception:
+            pass
 
     candidates = []
 

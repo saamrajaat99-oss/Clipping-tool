@@ -115,6 +115,8 @@ def get_video_encoder_args(use_nvenc: bool = True):
     else:
         return [
             "-c:v", "libx264",
-            "-preset", "faster",
-            "-crf", "21"
+            "-preset", "veryfast",
+            "-tune", "fastdecode",
+            "-threads", "0",
+            "-crf", "22"
         ]

@@ -275,28 +275,28 @@ def render_clip(
     if aspect_ratio == "9:16":
         filter_with_subs = (
             "[0:v]split=2[bg][fg];"
-            "[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[blurred];"
+            "[bg]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=5:1,scale=1080:1920:flags=fast_bilinear[blurred];"
             "[fg]scale=1080:-1:force_original_aspect_ratio=decrease[sharp];"
             "[blurred][sharp]overlay=(W-w)/2:(H-h)/2[merged];"
             f"[merged]subtitles='{clean_sub_path}'[outv]"
         )
         filter_without_subs = (
             "[0:v]split=2[bg][fg];"
-            "[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[blurred];"
+            "[bg]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=5:1,scale=1080:1920:flags=fast_bilinear[blurred];"
             "[fg]scale=1080:-1:force_original_aspect_ratio=decrease[sharp];"
             "[blurred][sharp]overlay=(W-w)/2:(H-h)/2[outv]"
         )
     elif aspect_ratio == "1:1":
         filter_with_subs = (
             "[0:v]split=2[bg][fg];"
-            "[bg]scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,boxblur=15:5[blurred];"
+            "[bg]scale=180:180:force_original_aspect_ratio=increase,crop=180:180,boxblur=5:1,scale=1080:1080:flags=fast_bilinear[blurred];"
             "[fg]scale=1080:-1:force_original_aspect_ratio=decrease[sharp];"
             "[blurred][sharp]overlay=(W-w)/2:(H-h)/2[merged];"
             f"[merged]subtitles='{clean_sub_path}'[outv]"
         )
         filter_without_subs = (
             "[0:v]split=2[bg][fg];"
-            "[bg]scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,boxblur=15:5[blurred];"
+            "[bg]scale=180:180:force_original_aspect_ratio=increase,crop=180:180,boxblur=5:1,scale=1080:1080:flags=fast_bilinear[blurred];"
             "[fg]scale=1080:-1:force_original_aspect_ratio=decrease[sharp];"
             "[blurred][sharp]overlay=(W-w)/2:(H-h)/2[outv]"
         )
@@ -316,8 +316,8 @@ def render_clip(
             ffmpeg_cmd,
             "-y",
             "-ss", str(start_time),
-            "-t", str(duration),
             "-i", source_video_path,
+            "-t", str(duration),
             "-filter_complex", f_graph,
             "-map", "[outv]",
             "-map", "0:a?",
@@ -325,10 +325,11 @@ def render_clip(
             "-c:a", "aac",
             "-b:a", "192k",
             "-ar", "44100",
+            "-threads", "0",
             "-movflags", "+faststart",
             output_video_path
         ]
-        return subprocess.run(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+        return subprocess.run(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=240)
 
     res = execute_ffmpeg(filter_with_subs, active_encoder_args)
     if res.returncode != 0:
@@ -365,20 +366,27 @@ def render_clip(
     }
 
 def render_compilation_short(
-    clip_items: List[Dict[str, Any]],
-    compilation_id: str,
+    clip_items: Optional[List[Dict[str, Any]]] = None,
+    compilation_id: str = "",
+    aspect_ratio: str = "9:16",
     transition_type: str = "fade",
     transition_duration: float = 0.5,
-    aspect_ratio: str = "9:16",
     caption_style: str = "hormozi_yellow",
-    use_nvenc: bool = True
+    use_nvenc: bool = True,
+    clips_to_stitch: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Attaches 4 to 5 clips together with cinematic transitions (fade, slideup, wipeleft, etc.)
     and burns synchronized animated captions across the entire stitched short video!
     """
-    if not clip_items or len(clip_items) < 2:
+    items = clips_to_stitch if clips_to_stitch is not None else (clip_items or [])
+    if not items or len(items) < 2:
         return {"success": False, "error": "Need at least 2 clips to create a compilation video."}
+
+    try:
+        transition_duration = float(transition_duration)
+    except (ValueError, TypeError):
+        transition_duration = 0.5
 
     if transition_type not in VALID_TRANSITIONS:
         transition_type = "fade"
@@ -391,7 +399,7 @@ def render_compilation_short(
     durations = []
 
     try:
-        for idx, clip in enumerate(clip_items):
+        for idx, clip in enumerate(items):
             seg_file = str(GENERATED_CLIPS_DIR / f"temp_{compilation_id}_seg_{idx}.mp4")
             src_path = clip.get("source_path") or clip.get("video_path")
             s_time = float(clip.get("start_time", 0))
@@ -403,14 +411,14 @@ def render_compilation_short(
             if aspect_ratio == "9:16":
                 norm_filter = (
                     "[0:v]split=2[bg][fg];"
-                    "[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[blurred];"
+                    "[bg]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=5:1,scale=1080:1920:flags=fast_bilinear[blurred];"
                     "[fg]scale=1080:-1:force_original_aspect_ratio=decrease[sharp];"
                     "[blurred][sharp]overlay=(W-w)/2:(H-h)/2,fps=30,format=yuv420p[outv]"
                 )
             elif aspect_ratio == "1:1":
                 norm_filter = (
                     "[0:v]split=2[bg][fg];"
-                    "[bg]scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,boxblur=15:5[blurred];"
+                    "[bg]scale=180:180:force_original_aspect_ratio=increase,crop=180:180,boxblur=5:1,scale=1080:1080:flags=fast_bilinear[blurred];"
                     "[fg]scale=1080:-1:force_original_aspect_ratio=decrease[sharp];"
                     "[blurred][sharp]overlay=(W-w)/2:(H-h)/2,fps=30,format=yuv420p[outv]"
                 )
@@ -421,13 +429,14 @@ def render_compilation_short(
                 ffmpeg_cmd,
                 "-y",
                 "-ss", str(s_time),
-                "-t", str(dur),
                 "-i", src_path,
+                "-t", str(dur),
                 "-filter_complex", norm_filter,
                 "-map", "[outv]",
                 "-map", "0:a?",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
+                "-threads", "0",
                 "-c:a", "aac",
                 "-ar", "44100",
                 "-ac", "2",
@@ -447,7 +456,7 @@ def render_compilation_short(
         # Generate continuous ASS subtitles covering all segments
         ass_sub_path = str(SUBTITLES_DIR / f"{compilation_id}.ass")
         generate_multi_clip_subtitles(
-            clips_data=clip_items,
+            clips_data=items,
             output_ass_path=ass_sub_path,
             transition_duration=transition_duration,
             style_name=caption_style
