@@ -10,7 +10,11 @@ import {
   Sparkles, 
   Download, 
   Filter,
-  CheckCircle2
+  CheckCircle2,
+  Layers,
+  Check,
+  RefreshCw,
+  Plus
 } from 'lucide-react';
 import { Clip, Video } from '../types';
 import { api } from '../services/api';
@@ -33,6 +37,10 @@ export const VideoLibrary: React.FC<VideoLibraryProps> = ({
   const [activeTab, setActiveTab] = useState<'clips' | 'videos'>('clips');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
+  const [compilationTransition, setCompilationTransition] = useState<string>('fade');
+  const [isCompiling, setIsCompiling] = useState<boolean>(false);
+  const [compilingMsg, setCompilingMsg] = useState<string>('');
 
   const filteredClips = clips.filter(c => {
     const matchesSearch = c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -46,11 +54,54 @@ export const VideoLibrary: React.FC<VideoLibraryProps> = ({
     v.platform.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const toggleSelectClip = (clipId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (selectedClipIds.includes(clipId)) {
+      setSelectedClipIds(selectedClipIds.filter(id => id !== clipId));
+    } else {
+      if (selectedClipIds.length >= 8) {
+        alert('You can select up to 8 clips to compile into a single short.');
+        return;
+      }
+      setSelectedClipIds([...selectedClipIds, clipId]);
+    }
+  };
+
+  const handleCreateCompilation = async () => {
+    if (selectedClipIds.length < 2) {
+      alert('Please select at least 2 clips (e.g. 4-5 clips) to merge.');
+      return;
+    }
+    setIsCompiling(true);
+    setCompilingMsg(`Stitching ${selectedClipIds.length} clips with ${compilationTransition} transitions...`);
+    try {
+      const res = await api.createCompilation({
+        clip_ids: selectedClipIds,
+        transition_type: compilationTransition
+      });
+      if (res.success) {
+        setSelectedClipIds([]);
+        onRefresh();
+        if (res.clip) {
+          onSelectClip(res.clip);
+        }
+      } else {
+        alert(`Compilation failed: ${res.detail || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      alert(`Error creating compilation: ${err.message}`);
+    } finally {
+      setIsCompiling(false);
+      setCompilingMsg('');
+    }
+  };
+
   const handleDeleteClip = async (clipId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!window.confirm('Delete this clip and its media files?')) return;
     try {
       await api.deleteClip(clipId);
+      setSelectedClipIds(selectedClipIds.filter(id => id !== clipId));
       onRefresh();
     } catch (err: any) {
       alert(`Delete failed: ${err.message}`);
@@ -135,6 +186,76 @@ export const VideoLibrary: React.FC<VideoLibraryProps> = ({
         )}
       </div>
 
+      {/* Multi-Clip Compilation Toolbar when clips are selected */}
+      {selectedClipIds.length > 0 && activeTab === 'clips' && (
+        <div className="p-4 rounded-2xl bg-gradient-to-r from-indigo-950/90 via-slate-900 to-indigo-950/90 border border-indigo-500/40 shadow-2xl flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold">
+              <Layers className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="text-sm font-bold text-white flex items-center gap-2">
+                <span>{selectedClipIds.length} Clip(s) Selected</span>
+                <span className="text-xs font-normal text-slate-400">
+                  {selectedClipIds.length >= 2 ? '(Ready to merge into single short)' : '(Select at least 2 clips)'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">
+                Stitches selected clips into a continuous short with smooth transitions & synchronized word captions.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 w-full md:w-auto">
+            <select
+              value={compilationTransition}
+              onChange={(e) => setCompilationTransition(e.target.value)}
+              className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-200 outline-none"
+            >
+              <option value="fade">Crossfade Transition</option>
+              <option value="slideup">Slide Up Transition</option>
+              <option value="slidedown">Slide Down Transition</option>
+              <option value="wipeleft">Wipe Left Transition</option>
+              <option value="wiperight">Wipe Right Transition</option>
+              <option value="circleopen">Circle Iris Transition</option>
+              <option value="fadeblack">Dip to Black Transition</option>
+            </select>
+
+            <button
+              onClick={handleCreateCompilation}
+              disabled={selectedClipIds.length < 2 || isCompiling}
+              className="px-5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 flex items-center gap-2 disabled:opacity-50 transition-all shrink-0"
+            >
+              {isCompiling ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Stitching Video...</span>
+                </>
+              ) : (
+                <>
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Merge into Single Short Video</span>
+                </>
+              )}
+            </button>
+
+            <button
+              onClick={() => setSelectedClipIds([])}
+              className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs transition-colors shrink-0"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
+      {compilingMsg && (
+        <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs flex items-center gap-2">
+          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+          <span>{compilingMsg}</span>
+        </div>
+      )}
+
       {/* Grid Display */}
       {activeTab === 'clips' ? (
         filteredClips.length > 0 ? (
@@ -143,12 +264,20 @@ export const VideoLibrary: React.FC<VideoLibraryProps> = ({
               const thumbUrl = clip.thumbnail_path
                 ? `/storage/Thumbnails/${clip.thumbnail_path.split(/[\\/]/).pop()}`
                 : '';
+              const isSelected = selectedClipIds.includes(clip.id);
+              const isCompilation = clip.title.includes('Compilation') || (clip.description && clip.description.includes('stitched'));
 
               return (
                 <div
                   key={clip.id}
                   onClick={() => onSelectClip(clip)}
-                  className="group relative rounded-2xl bg-[#12141d]/90 border border-slate-800/80 hover:border-indigo-500/50 overflow-hidden cursor-pointer flex flex-col transition-all duration-200 shadow-md hover:shadow-xl hover:shadow-indigo-500/5"
+                  className={`group relative rounded-2xl bg-[#12141d]/90 overflow-hidden cursor-pointer flex flex-col transition-all duration-200 shadow-md hover:shadow-xl ${
+                    isSelected
+                      ? 'border-2 border-indigo-500 ring-2 ring-indigo-500/40'
+                      : isCompilation
+                      ? 'border border-amber-500/60 shadow-amber-500/10'
+                      : 'border border-slate-800/80 hover:border-indigo-500/50'
+                  }`}
                 >
                   {/* Thumbnail Container */}
                   <div className="relative aspect-[9/16] bg-slate-950 overflow-hidden flex items-center justify-center">
@@ -165,10 +294,32 @@ export const VideoLibrary: React.FC<VideoLibraryProps> = ({
                     {/* Gradient Overlay */}
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/30" />
 
-                    {/* Virality Badge */}
-                    <div className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-cyan-500/20 backdrop-blur-md border border-cyan-500/40 text-[10px] font-bold text-cyan-300 flex items-center gap-1">
-                      <Sparkles className="w-3 h-3" />
-                      <span>{clip.virality_score || 92}</span>
+                    {/* Multi-Clip Selection Checkbox */}
+                    <button
+                      onClick={(e) => toggleSelectClip(clip.id, e)}
+                      className={`absolute top-3 left-3 z-10 w-6 h-6 rounded-lg flex items-center justify-center transition-all ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white shadow-md'
+                          : 'bg-black/60 backdrop-blur-md text-slate-400 hover:text-white border border-white/20'
+                      }`}
+                      title={isSelected ? 'Deselect clip' : 'Select for multi-clip compilation short'}
+                    >
+                      {isSelected ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                    </button>
+
+                    {/* Virality / Compilation Badge */}
+                    <div className="absolute top-3 left-11 px-2.5 py-0.5 rounded-full bg-black/60 backdrop-blur-md border border-slate-700 text-[10px] font-bold flex items-center gap-1">
+                      {isCompilation ? (
+                        <>
+                          <Layers className="w-3 h-3 text-amber-400" />
+                          <span className="text-amber-300 font-extrabold">Compilation Short</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-3 h-3 text-cyan-400" />
+                          <span className="text-cyan-300">{clip.virality_score || 92}</span>
+                        </>
+                      )}
                     </div>
 
                     {/* Duration Badge */}

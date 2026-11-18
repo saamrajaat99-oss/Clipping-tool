@@ -1,4 +1,4 @@
-import { Video, Clip, Task, SocialAccount, AnalyticsData, AppSettings } from '../types';
+import { Video, Clip, Task, SocialAccount, AnalyticsData, AppSettings, VideoImportRequest, CreateCompilationRequest } from '../types';
 
 const API_BASE = '/api';
 
@@ -14,15 +14,7 @@ export const api = {
     return res.json();
   },
 
-  async importVideos(payload: {
-    urls: string[];
-    clip_durations: number[];
-    num_clips_per_video: number;
-    aspect_ratio: string;
-    caption_style: string;
-    target_platforms: string[];
-    auto_publish: boolean;
-  }) {
+  async importVideos(payload: VideoImportRequest) {
     const res = await fetch(`${API_BASE}/videos/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -31,12 +23,41 @@ export const api = {
     return res.json();
   },
 
-  async uploadVideo(formData: FormData) {
-    const res = await fetch(`${API_BASE}/videos/upload`, {
-      method: 'POST',
-      body: formData
+  uploadVideo(formData: FormData, onProgress?: (percent: number, loadedMB: number, totalMB: number) => void): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/videos/upload`);
+
+      if (onProgress && xhr.upload) {
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const pct = Math.round((event.loaded / event.total) * 100);
+            const loadedMB = Math.round(event.loaded / (1024 * 1024));
+            const totalMB = Math.round(event.total / (1024 * 1024));
+            onProgress(pct, loadedMB, totalMB);
+          }
+        };
+      }
+
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(data);
+          } else {
+            resolve({ success: false, detail: data.detail || `Upload failed with HTTP ${xhr.status}` });
+          }
+        } catch (e) {
+          resolve({ success: false, detail: xhr.responseText || 'Server returned invalid response.' });
+        }
+      };
+
+      xhr.onerror = () => {
+        reject(new Error('Network error during file upload. Please check connection.'));
+      };
+
+      xhr.send(formData);
     });
-    return res.json();
   },
 
   async deleteVideo(id: string) {
@@ -97,6 +118,15 @@ export const api = {
 
   async deleteClip(id: string) {
     const res = await fetch(`${API_BASE}/clips/${id}`, { method: 'DELETE' });
+    return res.json();
+  },
+
+  async createCompilation(payload: CreateCompilationRequest) {
+    const res = await fetch(`${API_BASE}/clips/create-compilation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
     return res.json();
   },
 

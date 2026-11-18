@@ -96,48 +96,101 @@ def detect_silence_and_energy(video_path: str, min_silence_duration: float = 0.5
         
     return silences
 
+def load_wav_as_float32(wav_path: str):
+    """Loads 16kHz WAV file into a numpy float32 audio buffer for Whisper."""
+    import wave
+    import numpy as np
+    try:
+        with wave.open(wav_path, 'rb') as wf:
+            n_frames = wf.getnframes()
+            data = wf.readframes(n_frames)
+            audio_np = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+            return audio_np
+    except Exception as e:
+        logger.warning(f"Error loading wav as float32: {e}")
+        return None
+
 def transcribe_audio(wav_path: str, model_size: str = "base") -> List[Dict[str, Any]]:
     """
-    Transcribes audio to word-timed segments.
-    Uses faster-whisper or whisper if installed, or falls back to robust phonetic/energy segmenter.
+    Transcribes audio to word-timed segments from the real video audio.
+    Uses faster-whisper on numpy audio buffer (with word-level timestamps),
+    with SpeechRecognition and acoustic energy fallbacks.
     """
     segments = []
     
-    # 1. Try faster_whisper or whisper
+    # 1. Try faster-whisper with float32 numpy buffer (bypasses av.open issues)
     try:
-        from faster_whisper import WhisperModel
-        # Use GPU / CUDA if available, else CPU
-        hw = get_hardware_info()
-        device = "cuda" if hw["has_nvidia_gpu"] else "cpu"
-        compute_type = "float16" if device == "cuda" else "int8"
-        
-        model = WhisperModel(model_size, device=device, compute_type=compute_type)
-        whisper_segments, _ = model.transcribe(wav_path, word_timestamps=True)
-        
-        for seg in whisper_segments:
-            words = []
-            if seg.words:
-                for w in seg.words:
-                    words.append({
-                        "word": w.word.strip(),
-                        "start": round(w.start, 2),
-                        "end": round(w.end, 2),
-                        "probability": round(w.probability, 2)
+        audio_np = load_wav_as_float32(wav_path)
+        if audio_np is not None and len(audio_np) > 0:
+            from faster_whisper import WhisperModel
+            # Load model on CPU with int8 quantization (super fast on i7-13650HX)
+            model = WhisperModel("tiny", device="cpu", compute_type="int8")
+            whisper_segments, info = model.transcribe(audio_np, word_timestamps=True)
+            
+            for seg in whisper_segments:
+                words = []
+                if seg.words:
+                    for w in seg.words:
+                        words.append({
+                            "word": w.word.strip(),
+                            "start": round(w.start, 2),
+                            "end": round(w.end, 2),
+                            "probability": round(w.probability, 2)
+                        })
+                cleaned_text = seg.text.strip()
+                if cleaned_text:
+                    segments.append({
+                        "start": round(seg.start, 2),
+                        "end": round(seg.end, 2),
+                        "text": cleaned_text,
+                        "words": words
                     })
-            segments.append({
-                "start": round(seg.start, 2),
-                "end": round(seg.end, 2),
-                "text": seg.text.strip(),
-                "words": words
-            })
-        if segments:
-            return segments
-    except ImportError:
-        pass
+            if segments:
+                logger.info(f"Faster-Whisper successfully transcribed {len(segments)} real speech segments! (Language: {info.language})")
+                return segments
     except Exception as e:
-        logger.warning(f"Whisper transcription failed or model loading issue: {e}")
+        logger.warning(f"Faster-Whisper transcription note: {e}")
 
-    # Fallback: Extract speech energy and synthesize synchronized transcript tokens
+    # 2. Try SpeechRecognition as real speech fallback
+    try:
+        import speech_recognition as sr
+        r = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
+            audio_data = r.record(source)
+            text = r.recognize_google(audio_data)
+            if text and text.strip():
+                logger.info(f"Google Speech Recognition transcribed: {text[:80]}...")
+                raw_words = text.strip().split()
+                import wave
+                with wave.open(wav_path, 'rb') as wf:
+                    dur = wf.getnframes() / float(wf.getframerate())
+                w_dur = dur / max(len(raw_words), 1)
+                
+                group_size = 5
+                for i in range(0, len(raw_words), group_size):
+                    chunk_words = raw_words[i:i+group_size]
+                    s_start = round(i * w_dur, 2)
+                    s_end = round(min((i + len(chunk_words)) * w_dur, dur), 2)
+                    timed_words = []
+                    for idx_w, w in enumerate(chunk_words):
+                        timed_words.append({
+                            "word": w,
+                            "start": round(s_start + idx_w * w_dur, 2),
+                            "end": round(s_start + (idx_w + 1) * w_dur, 2),
+                            "probability": 0.95
+                        })
+                    segments.append({
+                        "start": s_start,
+                        "end": s_end,
+                        "text": " ".join(chunk_words),
+                        "words": timed_words
+                    })
+                if segments:
+                    return segments
+    except Exception as e:
+        logger.warning(f"SpeechRecognition fallback note: {e}")
+
+    # 3. Fallback: Acoustic speech segmentation
     logger.info("Using acoustic speech segmentation fallback...")
     segments = generate_acoustic_segments(wav_path)
     return segments
@@ -261,11 +314,14 @@ def analyze_and_generate_clips(
                 # Find segment closest to target_end without cutting a sentence
                 end_time = target_end
                 combined_text_list = []
+                combined_words = []
                 best_end_seg = start_seg
                 
                 for j in range(i, len(segments)):
                     seg = segments[j]
                     combined_text_list.append(seg["text"])
+                    if seg.get("words"):
+                        combined_words.extend(seg["words"])
                     if seg["end"] >= target_end or j == len(segments) - 1:
                         best_end_seg = seg
                         end_time = seg["end"]
@@ -289,6 +345,7 @@ def analyze_and_generate_clips(
                         "description": desc,
                         "hashtags": tags,
                         "transcript": clip_text,
+                        "words": combined_words,
                         "aspect_ratio": custom_aspect_ratio,
                         "caption_style": custom_caption_style
                     })

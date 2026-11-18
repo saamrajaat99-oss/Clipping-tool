@@ -1,12 +1,18 @@
 import os
 import json
+import uuid
 import logging
 from fastapi import APIRouter, HTTPException
 from typing import Optional, List
 
 from backend.database import get_db_connection, get_setting
-from backend.models import ClipUpdateRequest, ClipScheduleRequest, ManualPublishRequest
-from backend.engine.video_renderer import render_clip
+from backend.models import (
+    ClipUpdateRequest,
+    ClipScheduleRequest,
+    ManualPublishRequest,
+    CreateCompilationRequest
+)
+from backend.engine.video_renderer import render_clip, render_compilation_short
 from backend.engine.publisher import publish_clip_to_platform, PLATFORM_PORTALS
 from backend.engine.storage_manager import delete_clip_files
 
@@ -182,3 +188,99 @@ def delete_clip(clip_id: str):
     conn.commit()
     conn.close()
     return {"success": True, "message": "Clip deleted."}
+
+@router.post("/create-compilation")
+def create_compilation(req: CreateCompilationRequest):
+    """
+    Stitches 2 to 10 clips together with smooth transitions into a single short video.
+    """
+    if len(req.clip_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 clips are required to create a compilation.")
+
+    conn = get_db_connection()
+    placeholders = ",".join("?" for _ in req.clip_ids)
+    rows = conn.execute(f"""
+    SELECT c.*, v.file_path as source_path, v.title as video_title
+    FROM clips c
+    JOIN videos v ON c.video_id = v.id
+    WHERE c.id IN ({placeholders})
+    """, req.clip_ids).fetchall()
+    
+    clip_map = {row["id"]: dict(row) for row in rows}
+    
+    # Preserve specified order
+    ordered_clips = []
+    for cid in req.clip_ids:
+        if cid in clip_map:
+            ordered_clips.append(clip_map[cid])
+            
+    if len(ordered_clips) < 2:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Could not find sufficient valid clips for compilation.")
+
+    primary_video_id = ordered_clips[0]["video_id"]
+    primary_title = ordered_clips[0]["video_title"]
+
+    clips_to_stitch = []
+    for c in ordered_clips:
+        src = c.get("source_path")
+        if src and os.path.exists(src):
+            s_time = float(c["start_time"])
+            e_time = float(c["end_time"])
+        elif c.get("video_path") and os.path.exists(c["video_path"]):
+            src = c["video_path"]
+            s_time = 0.0
+            e_time = float(c.get("duration", 10.0))
+        else:
+            conn.close()
+            raise HTTPException(status_code=400, detail=f"Source video for clip '{c['title']}' not found on disk.")
+
+        clips_to_stitch.append({
+            "source_path": src,
+            "start_time": s_time,
+            "end_time": e_time,
+            "duration": float(c.get("duration", e_time - s_time)),
+            "transcript": c.get("title", ""),
+            "words": []
+        })
+
+    compilation_id = str(uuid.uuid4())
+    res = render_compilation_short(
+        clips_to_stitch=clips_to_stitch,
+        compilation_id=compilation_id,
+        aspect_ratio=req.aspect_ratio,
+        transition_type=req.transition_type,
+        transition_duration=req.transition_duration,
+        caption_style=req.caption_style,
+        use_nvenc=get_setting("nvenc_enabled", True)
+    )
+
+    if not res.get("success"):
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Compilation rendering failed: {res.get('error')}")
+
+    title = req.title or f"🔥 {primary_title[:35]} — Best Moments Compilation"
+    description = req.description or f"Top {len(ordered_clips)} highlights stitched together with seamless {req.transition_type} transitions! #Shorts #Viral"
+    hashtags = req.hashtags or "#Shorts #Viral #Compilation #BestMoments #Trending #Reels"
+
+    conn.execute("""
+    INSERT INTO clips (
+        id, video_id, title, description, hashtags, start_time, end_time, duration,
+        aspect_ratio, virality_score, hook_score, caption_style, video_path, thumbnail_path,
+        subtitle_path, status
+    ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 98, 97, ?, ?, ?, ?, 'ready')
+    """, (
+        compilation_id, primary_video_id, title, description, hashtags,
+        res["duration"], res["duration"], req.aspect_ratio,
+        req.caption_style, res["video_path"], res["thumbnail_path"], res["subtitle_path"]
+    ))
+    conn.commit()
+
+    created_clip = conn.execute("SELECT * FROM clips WHERE id = ?", (compilation_id,)).fetchone()
+    conn.close()
+
+    return {
+        "success": True,
+        "message": f"Successfully compiled {len(ordered_clips)} clips into a single short video with {req.transition_type} transitions!",
+        "clip": dict(created_clip)
+    }

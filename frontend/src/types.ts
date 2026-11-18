@@ -118,3 +118,29 @@ export interface AppSettings {
   hardware: HardwareInfo;
   storage: AnalyticsData['storage'];
 }
+
+export interface VideoImportRequest {
+  urls: string[];
+  clip_durations: number[];
+  num_clips_per_video: number;
+  aspect_ratio: '9:16' | '16:9' | '1:1';
+  caption_style: string;
+  target_platforms: string[];
+  auto_publish: boolean;
+  schedule_start_time?: string;
+  schedule_interval_hours?: number;
+  create_compilation?: boolean;
+  transition_type?: string;
+  transition_duration?: number;
+}
+
+export interface CreateCompilationRequest {
+  clip_ids: string[];
+  transition_type?: string;
+  transition_duration?: number;
+  aspect_ratio?: '9:16' | '16:9' | '1:1';
+  caption_style?: string;
+  title?: string;
+  description?: string;
+  hashtags?: string;
+}

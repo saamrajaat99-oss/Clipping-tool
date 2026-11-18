@@ -80,7 +80,10 @@ def import_videos(req: VideoImportRequest):
             "aspect_ratio": req.aspect_ratio,
             "caption_style": req.caption_style,
             "auto_publish": req.auto_publish,
-            "target_platforms": req.target_platforms
+            "target_platforms": req.target_platforms,
+            "create_compilation": req.create_compilation,
+            "transition_type": req.transition_type,
+            "transition_duration": req.transition_duration
         }
 
         conn.execute("""
@@ -103,18 +106,49 @@ def import_videos(req: VideoImportRequest):
 async def upload_video(
     file: UploadFile = File(...),
     clip_durations: str = Form("30,60"),
-    num_clips: int = Form(3),
+    num_clips: int = Form(4),
     aspect_ratio: str = Form("9:16"),
-    caption_style: str = Form("hormozi_yellow")
+    caption_style: str = Form("hormozi_yellow"),
+    create_compilation: bool = Form(True),
+    transition_type: str = Form("fade"),
+    transition_duration: float = Form(0.5)
 ):
-    """Handles local video file upload from user's laptop."""
+    """Handles local video file upload from user's laptop (supports files up to 10 GB)."""
     video_id = str(uuid.uuid4())
     task_id = str(uuid.uuid4())
     ext = Path(file.filename).suffix or ".mp4"
     dest_path = ORIGINAL_VIDEOS_DIR / f"{video_id}{ext}"
 
-    with open(dest_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    # 10 GB maximum file upload threshold
+    MAX_UPLOAD_SIZE = 10 * 1024 * 1024 * 1024  # 10 GB
+    total_written = 0
+    chunk_size = 16 * 1024 * 1024  # 16 MB chunks for optimal disk streaming
+
+    try:
+        with open(dest_path, "wb") as buffer:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_written += len(chunk)
+                if total_written > MAX_UPLOAD_SIZE:
+                    buffer.close()
+                    if dest_path.exists():
+                        dest_path.unlink()
+                    raise HTTPException(
+                        status_code=413,
+                        detail="File size exceeds maximum allowed 10 GB limit."
+                    )
+                buffer.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if dest_path.exists():
+            try:
+                dest_path.unlink()
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Failed to save uploaded video: {str(e)}")
 
     # Extract metadata using local probe
     meta = extract_video_metadata(str(dest_path))
@@ -147,7 +181,10 @@ async def upload_video(
         "aspect_ratio": aspect_ratio,
         "caption_style": caption_style,
         "auto_publish": False,
-        "target_platforms": ["youtube"]
+        "target_platforms": ["youtube"],
+        "create_compilation": create_compilation,
+        "transition_type": transition_type,
+        "transition_duration": transition_duration
     }
 
     conn.execute("""

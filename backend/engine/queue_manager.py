@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 from backend.database import get_db_connection, get_setting
 from backend.engine.importer import download_video, extract_video_metadata, generate_video_thumbnail
 from backend.engine.ai_engine import analyze_and_generate_clips
-from backend.engine.video_renderer import render_clip
+from backend.engine.video_renderer import render_clip, render_compilation_short
 from backend.engine.publisher import publish_clip_to_platform
 from backend.engine.storage_manager import cleanup_raw_video
 
@@ -180,6 +180,7 @@ class QueueWorker:
                     aspect_ratio=aspect_ratio,
                     caption_style=caption_style,
                     transcript=c_meta["transcript"],
+                    words=c_meta.get("words", []),
                     use_nvenc=get_setting("nvenc_enabled", True)
                 )
 
@@ -200,6 +201,62 @@ class QueueWorker:
 
             conn.commit()
             conn.close()
+
+            # Optional automatic multi-clip compilation short
+            create_compilation = clip_config.get("create_compilation", True)
+            transition_type = clip_config.get("transition_type", "fade")
+            transition_duration = float(clip_config.get("transition_duration", 0.5))
+
+            if create_compilation and len(created_clip_ids) >= 2:
+                try:
+                    num_comp_clips = min(len(clips_metadata), 5)
+                    self._update_task(task_id, "generating", 95, f"Stitching {num_comp_clips} clips with '{transition_type}' transitions into a single compilation short...")
+                    
+                    comp_clips_subset = clips_metadata[:num_comp_clips]
+                    comp_clip_items = []
+                    for c_meta in comp_clips_subset:
+                        comp_clip_items.append({
+                            "source_path": file_path,
+                            "start_time": c_meta["start_time"],
+                            "end_time": c_meta["end_time"],
+                            "duration": c_meta["duration"],
+                            "transcript": c_meta.get("transcript", c_meta.get("title", "")),
+                            "words": c_meta.get("words", [])
+                        })
+
+                    comp_clip_id = str(uuid.uuid4())
+                    comp_res = render_compilation_short(
+                        clips_to_stitch=comp_clip_items,
+                        compilation_id=comp_clip_id,
+                        aspect_ratio=aspect_ratio,
+                        transition_type=transition_type,
+                        transition_duration=transition_duration,
+                        caption_style=caption_style,
+                        use_nvenc=get_setting("nvenc_enabled", True)
+                    )
+
+                    if comp_res.get("success"):
+                        conn = get_db_connection()
+                        comp_title = f"🔥 {video['title'][:35]} — Best Moments Compilation"
+                        comp_desc = f"Top {num_comp_clips} highlights compiled with smooth {transition_type} transitions into a single short video! #Viral #Highlights"
+                        comp_tags = "#Shorts #Viral #Compilation #BestMoments #Reels #Trending"
+                        conn.execute("""
+                        INSERT INTO clips (
+                            id, video_id, title, description, hashtags, start_time, end_time, duration,
+                            aspect_ratio, virality_score, hook_score, caption_style, video_path, thumbnail_path,
+                            subtitle_path, status
+                        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 98, 97, ?, ?, ?, ?, 'ready')
+                        """, (
+                            comp_clip_id, video_id, comp_title, comp_desc, comp_tags,
+                            comp_res["duration"], comp_res["duration"], aspect_ratio,
+                            caption_style, comp_res["video_path"], comp_res["thumbnail_path"], comp_res["subtitle_path"]
+                        ))
+                        conn.commit()
+                        conn.close()
+                        created_clip_ids.append(comp_clip_id)
+                        logger.info(f"Generated compilation short {comp_clip_id} ({num_comp_clips} clips)")
+                except Exception as comp_err:
+                    logger.warning(f"Error auto-generating compilation short: {comp_err}", exc_info=True)
 
             # 4. Auto-publish if requested
             if auto_publish and created_clip_ids:
